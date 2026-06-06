@@ -1,7 +1,7 @@
 //! Sans-io MCP (Streamable HTTP / JSON-RPC 2.0) protocol helpers.
 //! No network or WIT imports — usable from native hosts and wasm guests alike.
 
-use crate::error::{ProtoError, ServerError};
+use crate::error::{ProtoError, ServerError, ToolCallError};
 use serde_json::{Value, json};
 
 /// MCP protocol revision this crate speaks by default.
@@ -156,7 +156,10 @@ pub fn map_tools_list(result: &Value) -> Vec<McpToolDef> {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let input_schema = tool.get("inputSchema").cloned().unwrap_or_else(|| json!({}));
+            let input_schema = tool
+                .get("inputSchema")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             Some(McpToolDef {
                 name,
                 description,
@@ -168,7 +171,7 @@ pub fn map_tools_list(result: &Value) -> Vec<McpToolDef> {
 
 /// Extract a `tools/call` result. Honors the MCP `isError` flag (mapped to
 /// `Err`); keeps structured content and joined text blocks separately.
-pub fn extract_tool_output(result: &Value) -> Result<ToolOutput, crate::error::ToolCallError> {
+pub fn extract_tool_output(result: &Value) -> Result<ToolOutput, ToolCallError> {
     let is_error = result
         .get("isError")
         .and_then(Value::as_bool)
@@ -189,7 +192,7 @@ pub fn extract_tool_output(result: &Value) -> Result<ToolOutput, crate::error::T
             None if text.is_empty() => "tool call returned isError".to_string(),
             None => text,
         };
-        return Err(crate::error::ToolCallError { message });
+        return Err(ToolCallError { message });
     }
     Ok(ToolOutput { structured, text })
 }
@@ -214,7 +217,6 @@ pub fn extract_result(envelope: &Value) -> Result<Value, crate::error::McpError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::ToolCallError;
     use serde_json::json;
 
     #[test]
