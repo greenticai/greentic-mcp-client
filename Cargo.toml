@@ -1,0 +1,27 @@
+[package]
+name = "greentic-mcp-client"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT"
+repository = "https://github.com/greenticai/greentic-mcp-client"
+description = "Client for remote MCP servers over Streamable HTTP (JSON-RPC 2.0)"
+keywords = ["mcp", "greentic", "json-rpc"]
+categories = ["api-bindings"]
+
+[features]
+default = ["native"]
+# reqwest-based transport. Disable for wasm32-wasip2 consumers, which use the
+# sans-io `proto` module with their own (host-provided) HTTP transport.
+native = ["dep:reqwest", "dep:url"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+url = { version = "2", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
