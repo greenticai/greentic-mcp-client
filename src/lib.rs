@@ -14,4 +14,4 @@ pub mod error;
 pub mod proto;
 
 pub use error::{McpError, ProtoError, ServerError, ToolCallError};
-pub use proto::PROTOCOL_VERSION;
+pub use proto::{McpToolDef, PROTOCOL_VERSION, ToolOutput};

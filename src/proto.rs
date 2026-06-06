@@ -111,6 +111,89 @@ pub fn parse_jsonrpc_response(
     }
 }
 
+/// One tool surfaced by a remote MCP `tools/list`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpToolDef {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema for the tool arguments; `{}` when the server omits it.
+    pub input_schema: Value,
+}
+
+/// Successful `tools/call` payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolOutput {
+    /// `structuredContent` when the server returned one.
+    pub structured: Option<Value>,
+    /// Concatenated text `content` blocks (may be empty).
+    pub text: String,
+}
+
+impl ToolOutput {
+    /// `structuredContent` when present, else the joined text as a JSON string.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        match &self.structured {
+            Some(v) => v.clone(),
+            None => Value::String(self.text.clone()),
+        }
+    }
+}
+
+/// Map a `tools/list` result into tool definitions. Tools without a name are
+/// dropped; a missing `inputSchema` becomes `{}`.
+#[must_use]
+pub fn map_tools_list(result: &Value) -> Vec<McpToolDef> {
+    let Some(tools) = result.get("tools").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    tools
+        .iter()
+        .filter_map(|tool| {
+            let name = tool.get("name").and_then(Value::as_str)?.to_string();
+            let description = tool
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let input_schema = tool.get("inputSchema").cloned().unwrap_or_else(|| json!({}));
+            Some(McpToolDef {
+                name,
+                description,
+                input_schema,
+            })
+        })
+        .collect()
+}
+
+/// Extract a `tools/call` result. Honors the MCP `isError` flag (mapped to
+/// `Err`); keeps structured content and joined text blocks separately.
+pub fn extract_tool_output(result: &Value) -> Result<ToolOutput, crate::error::ToolCallError> {
+    let is_error = result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let structured = result.get("structuredContent").cloned();
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(content) = result.get("content").and_then(Value::as_array) {
+        for block in content {
+            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                parts.push(text.to_string());
+            }
+        }
+    }
+    let text = parts.join("\n");
+    if is_error {
+        let message = match &structured {
+            Some(v) => v.to_string(),
+            None if text.is_empty() => "tool call returned isError".to_string(),
+            None => text,
+        };
+        return Err(crate::error::ToolCallError { message });
+    }
+    Ok(ToolOutput { structured, text })
+}
+
 /// Return the `result` object, or the typed error a JSON-RPC `error` carries.
 pub fn extract_result(envelope: &Value) -> Result<Value, crate::error::McpError> {
     if let Some(error) = envelope.get("error") {
@@ -131,6 +214,7 @@ pub fn extract_result(envelope: &Value) -> Result<Value, crate::error::McpError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ToolCallError;
     use serde_json::json;
 
     #[test]
@@ -240,5 +324,83 @@ mod tests {
             err,
             crate::error::McpError::Proto(ProtoError::MissingResult)
         ));
+    }
+
+    #[test]
+    fn maps_tools_list_with_value_schema() {
+        let result = json!({
+            "tools": [
+                { "name": "get_issue", "description": "Get an issue",
+                  "inputSchema": { "type": "object", "properties": { "repo": { "type": "string" } } } },
+                { "name": "search_code", "description": "Search code", "inputSchema": { "type": "object" } }
+            ]
+        });
+        let defs = map_tools_list(&result);
+        assert_eq!(defs.len(), 2);
+        assert_eq!(defs[0].name, "get_issue");
+        assert_eq!(defs[0].input_schema["properties"]["repo"]["type"], "string");
+    }
+
+    #[test]
+    fn map_tools_list_missing_tools_returns_empty() {
+        assert!(map_tools_list(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn map_tools_list_drops_tool_without_name() {
+        let result = json!({ "tools": [
+            { "name": "good_tool", "description": "ok" },
+            { "description": "no name here" }
+        ]});
+        let defs = map_tools_list(&result);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "good_tool");
+    }
+
+    #[test]
+    fn map_tools_list_missing_schema_defaults_to_empty_object() {
+        let result = json!({ "tools": [{ "name": "t", "description": "d" }] });
+        let defs = map_tools_list(&result);
+        assert_eq!(defs[0].input_schema, json!({}));
+    }
+
+    #[test]
+    fn extract_tool_output_joins_text_content() {
+        let result = json!({ "content": [ { "type": "text", "text": "line1" }, { "type": "text", "text": "line2" } ] });
+        let out = extract_tool_output(&result).unwrap();
+        assert_eq!(out.text, "line1\nline2");
+        assert!(out.structured.is_none());
+        assert_eq!(out.to_value(), json!("line1\nline2"));
+    }
+
+    #[test]
+    fn extract_tool_output_keeps_structured_content() {
+        let result = json!({ "structuredContent": { "number": 7 }, "content": [ { "type": "text", "text": "also text" } ] });
+        let out = extract_tool_output(&result).unwrap();
+        assert_eq!(out.structured, Some(json!({ "number": 7 })));
+        assert_eq!(out.text, "also text");
+        assert_eq!(out.to_value(), json!({ "number": 7 }));
+    }
+
+    #[test]
+    fn extract_tool_output_is_error_maps_to_err() {
+        let result =
+            json!({ "isError": true, "content": [ { "type": "text", "text": "not found" } ] });
+        let err = extract_tool_output(&result).unwrap_err();
+        assert_eq!(err.message, "not found");
+    }
+
+    #[test]
+    fn extract_tool_output_is_error_without_payload_has_default_message() {
+        let result = json!({ "isError": true });
+        let err = extract_tool_output(&result).unwrap_err();
+        assert_eq!(err.message, "tool call returned isError");
+    }
+
+    #[test]
+    fn extract_tool_output_empty_content_returns_empty_ok() {
+        let result = json!({ "content": [] });
+        let out = extract_tool_output(&result).unwrap();
+        assert_eq!(out.text, "");
     }
 }
