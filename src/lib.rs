@@ -14,6 +14,12 @@ pub mod auth;
 pub mod error;
 pub mod proto;
 
+#[cfg(feature = "native")]
+pub mod client;
+
 pub use auth::McpAuth;
 pub use error::{McpError, ProtoError, ServerError, ToolCallError};
 pub use proto::{McpToolDef, PROTOCOL_VERSION, ToolOutput};
+
+#[cfg(feature = "native")]
+pub use client::{McpClientOptions, McpHttpClient, ServerInfo};
