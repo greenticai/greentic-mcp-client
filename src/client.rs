@@ -73,7 +73,12 @@ impl McpHttpClient {
 
     /// POST one JSON-RPC payload. For requests (`expected_id` set) returns
     /// the matching envelope; for notifications returns `None` after the
-    /// status check.
+    /// status check. As a side-effect, any `Mcp-Session-Id` header present in
+    /// the response is captured and replayed on all subsequent requests.
+    ///
+    /// HTTP 4xx/5xx responses surface as [`McpError::Transport`] via
+    /// `error_for_status`; any JSON-RPC error body the server attaches to such
+    /// a response is **not** parsed.
     async fn post(
         &mut self,
         payload: &Value,
