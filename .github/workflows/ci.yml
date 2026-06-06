@@ -1,0 +1,14 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the toolchain, components, and wasm target.
+      - uses: Swatinem/rust-cache@v2
+      - run: bash ci/local_check.sh
