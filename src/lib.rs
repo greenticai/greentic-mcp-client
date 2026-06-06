@@ -10,8 +10,10 @@
 //! (`default-features = false`); the [`client`] module (feature `native`, on
 //! by default) adds a reqwest transport.
 
+pub mod auth;
 pub mod error;
 pub mod proto;
 
+pub use auth::McpAuth;
 pub use error::{McpError, ProtoError, ServerError, ToolCallError};
 pub use proto::{McpToolDef, PROTOCOL_VERSION, ToolOutput};
