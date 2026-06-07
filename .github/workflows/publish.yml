@@ -1,0 +1,26 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the toolchain, components, and wasm target.
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify
+        run: bash ci/local_check.sh
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN is not available to this repository (org secret not shared or not set)"
+            exit 1
+          fi
+          cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"
