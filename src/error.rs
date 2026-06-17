@@ -39,6 +39,18 @@ pub enum McpError {
     #[cfg(feature = "native")]
     #[error("transport: {0}")]
     Transport(#[from] reqwest::Error),
+    /// Failed to launch a stdio MCP server subprocess (e.g. command not found).
+    #[cfg(feature = "native")]
+    #[error("failed to spawn stdio MCP server `{command}`: {source}")]
+    Spawn {
+        command: String,
+        source: std::io::Error,
+    },
+    /// A stdio transport fault: a broken pipe, a read timeout, or the child
+    /// exiting before answering a request.
+    #[cfg(feature = "native")]
+    #[error("stdio transport: {0}")]
+    StdioTransport(String),
     #[error("protocol: {0}")]
     Proto(#[from] ProtoError),
     #[error(transparent)]

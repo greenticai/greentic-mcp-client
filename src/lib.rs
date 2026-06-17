@@ -8,7 +8,9 @@
 //!
 //! The [`proto`] module is sans-io and compiles for `wasm32-wasip2`
 //! (`default-features = false`); the [`client`] module (feature `native`, on
-//! by default) adds a reqwest transport.
+//! by default) adds two transports sharing the [`client::McpClient`] shape:
+//! [`McpHttpClient`] (reqwest, remote) and [`McpStdioClient`] (tokio process,
+//! local subprocess speaking newline-delimited JSON-RPC).
 
 pub mod auth;
 pub mod error;
@@ -22,4 +24,4 @@ pub use error::{McpError, ProtoError, ServerError, ToolCallError};
 pub use proto::{McpToolDef, PROTOCOL_VERSION, ToolOutput};
 
 #[cfg(feature = "native")]
-pub use client::{McpClientOptions, McpHttpClient, ServerInfo};
+pub use client::{McpClient, McpClientOptions, McpHttpClient, McpStdioClient, ServerInfo};
