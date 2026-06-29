@@ -1,7 +1,11 @@
 # greentic-mcp-client
 
-Client for **remote MCP servers** over Streamable HTTP (JSON-RPC 2.0,
-protocol `2025-06-18`).
+Client for **MCP servers** over JSON-RPC 2.0 (protocol `2025-06-18`), via two
+native transports:
+
+- **HTTP** — remote servers over Streamable HTTP / SSE (`McpHttpClient`).
+- **stdio** — local subprocess servers over newline-delimited JSON-RPC on the
+  child's stdin/stdout (`McpStdioClient`).
 
 > Not to be confused with [`greentic-mcp`](https://github.com/greenticai/greentic-mcp)
 > (`greentic-mcp-exec`), which loads and executes `wasix:mcp` **WASM
@@ -12,10 +16,14 @@ protocol `2025-06-18`).
 - `proto` — sans-io protocol core: request builders, SSE-aware response
   parsing, tool mapping. Compiles for `wasm32-wasip2`
   (`default-features = false`).
-- `client` — `McpHttpClient` (feature `native`, default): reqwest transport,
-  `Mcp-Session-Id` threading, configurable auth header.
+- `client` — native transports (feature `native`, default), both exposing the
+  shared `McpClient` shape (`initialize` / `list_tools` / `call_tool`):
+  - `McpHttpClient` — reqwest transport, `Mcp-Session-Id` threading,
+    configurable auth header.
+  - `McpStdioClient` — tokio-process transport; spawns a local MCP server and
+    frames messages as line-delimited JSON. The child is killed on drop.
 
-## Usage (native)
+## Usage (native, HTTP)
 
 ```rust
 use greentic_mcp_client::{McpAuth, McpClientOptions, McpHttpClient};
@@ -31,10 +39,26 @@ let tools = client.list_tools().await?;
 let out = client.call_tool("echo", &serde_json::json!({ "msg": "hi" })).await?;
 ```
 
+## Usage (native, stdio)
+
+```rust
+use greentic_mcp_client::{McpClientOptions, McpStdioClient};
+
+let mut client = McpStdioClient::spawn(
+    "npx",
+    &["-y".into(), "@modelcontextprotocol/server-everything".into()],
+    &[], // extra env pairs, on top of the inherited environment
+    McpClientOptions::default(),
+)?;
+let info = client.initialize().await?;
+let tools = client.list_tools().await?;
+let out = client.call_tool("echo", &serde_json::json!({ "msg": "hi" })).await?;
+```
+
 ## Usage (wasm extension)
 
 ```toml
-greentic-mcp-client = { version = "0.1", default-features = false }
+greentic-mcp-client = { version = "1.2", default-features = false }
 ```
 
 Use the `proto` builders/parsers with your host's HTTP imports.

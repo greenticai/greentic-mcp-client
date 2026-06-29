@@ -1,40 +1,13 @@
 //! Native (reqwest) transport for remote MCP servers. Feature `native`.
 
+use super::{McpClient, McpClientOptions, ServerInfo};
 use crate::auth::McpAuth;
 use crate::error::{McpError, ProtoError};
 use crate::proto::{self, McpToolDef, ToolOutput};
 use serde_json::Value;
-use std::time::Duration;
 use url::Url;
 
 const SESSION_HEADER: &str = "Mcp-Session-Id";
-
-#[derive(Debug, Clone)]
-pub struct McpClientOptions {
-    /// Per-request timeout (connect + read).
-    pub timeout: Duration,
-    /// Reported in the `initialize` clientInfo. Name your consumer.
-    pub client_name: String,
-    pub client_version: String,
-}
-
-impl Default for McpClientOptions {
-    fn default() -> Self {
-        Self {
-            timeout: Duration::from_secs(30),
-            client_name: "greentic-mcp-client".to_string(),
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
-        }
-    }
-}
-
-/// Server identity from the `initialize` result.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServerInfo {
-    pub name: String,
-    pub version: String,
-    pub protocol_version: String,
-}
 
 /// One logical session against a remote MCP server. Request ids are
 /// monotonically increasing; the `Mcp-Session-Id` returned by the server (if
@@ -119,10 +92,31 @@ impl McpHttpClient {
         let envelope = proto::parse_jsonrpc_response(&content_type, &body, expected_id)?;
         Ok(Some(envelope))
     }
+}
 
+/// Inherent (non-trait) convenience wrappers so callers that hold a concrete
+/// `McpHttpClient` need not import the [`McpClient`] trait.
+impl McpHttpClient {
+    /// See [`McpClient::initialize`].
+    pub async fn initialize(&mut self) -> Result<ServerInfo, McpError> {
+        <Self as McpClient>::initialize(self).await
+    }
+
+    /// See [`McpClient::list_tools`].
+    pub async fn list_tools(&mut self) -> Result<Vec<McpToolDef>, McpError> {
+        <Self as McpClient>::list_tools(self).await
+    }
+
+    /// See [`McpClient::call_tool`].
+    pub async fn call_tool(&mut self, name: &str, args: &Value) -> Result<ToolOutput, McpError> {
+        <Self as McpClient>::call_tool(self, name, args).await
+    }
+}
+
+impl McpClient for McpHttpClient {
     /// `initialize` + `notifications/initialized` handshake. Captures the
     /// server's session id for subsequent requests.
-    pub async fn initialize(&mut self) -> Result<ServerInfo, McpError> {
+    async fn initialize(&mut self) -> Result<ServerInfo, McpError> {
         let id = self.take_id();
         let payload = proto::build_initialize(
             id,
@@ -135,32 +129,13 @@ impl McpHttpClient {
             .await?
             .ok_or(McpError::Proto(ProtoError::NoEnvelope))?;
         let result = proto::extract_result(&envelope)?;
-        let server_info = result.get("serverInfo").ok_or_else(|| {
-            McpError::BadInitialize("missing serverInfo in initialize result".to_string())
-        })?;
-        let info = ServerInfo {
-            name: server_info
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            version: server_info
-                .get("version")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            protocol_version: result
-                .get("protocolVersion")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-        };
+        let info = ServerInfo::from_initialize_result(&result)?;
         self.post(&proto::build_initialized(), None).await?;
         Ok(info)
     }
 
     /// `tools/list` → mapped definitions. Requires a completed `initialize`.
-    pub async fn list_tools(&mut self) -> Result<Vec<McpToolDef>, McpError> {
+    async fn list_tools(&mut self) -> Result<Vec<McpToolDef>, McpError> {
         let id = self.take_id();
         let envelope = self
             .post(&proto::build_tools_list(id), Some(id))
@@ -172,7 +147,7 @@ impl McpHttpClient {
 
     /// `tools/call`. Server-side tool failure (`isError`) maps to
     /// `McpError::ToolCall`; JSON-RPC failures to `McpError::Server`.
-    pub async fn call_tool(&mut self, name: &str, args: &Value) -> Result<ToolOutput, McpError> {
+    async fn call_tool(&mut self, name: &str, args: &Value) -> Result<ToolOutput, McpError> {
         let id = self.take_id();
         let envelope = self
             .post(&proto::build_tools_call(id, name, args), Some(id))
