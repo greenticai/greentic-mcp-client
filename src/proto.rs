@@ -118,6 +118,21 @@ pub struct McpToolDef {
     pub description: String,
     /// JSON Schema for the tool arguments; `{}` when the server omits it.
     pub input_schema: Value,
+    /// JSON Schema for what the tool RETURNS, when the server advertises one.
+    ///
+    /// `None` is the normal case — `outputSchema` is optional in the MCP spec,
+    /// so a server that omits it is conformant and callers must cope. It is
+    /// deliberately `Option<Value>` rather than defaulting to `{}` like
+    /// `input_schema`: absent and "declared empty" mean different things to a
+    /// caller that wants to know a tool's field names, and collapsing them
+    /// would make the two indistinguishable.
+    ///
+    /// Callers use it to know what a tool's result actually contains. Without
+    /// it they can only guess: a Greentic flow referenced
+    /// `{{node.mcp_quote.outputs.annual_premium}}` and another
+    /// `{{node.mcp_quote.annual_premium}}`, and both rendered blank with no
+    /// error, because nothing could tell anyone the real field names.
+    pub output_schema: Option<Value>,
 }
 
 /// Successful `tools/call` payload.
@@ -160,10 +175,16 @@ pub fn map_tools_list(result: &Value) -> Vec<McpToolDef> {
                 .get("inputSchema")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
+            // Passed through verbatim, including a non-object: this crate
+            // reports what the server said, and a caller that cares whether the
+            // schema is well-formed can see it and say so. Silently normalising
+            // it here would hide a broken server from every caller at once.
+            let output_schema = tool.get("outputSchema").cloned();
             Some(McpToolDef {
                 name,
                 description,
                 input_schema,
+                output_schema,
             })
         })
         .collect()
@@ -341,6 +362,50 @@ mod tests {
         assert_eq!(defs.len(), 2);
         assert_eq!(defs[0].name, "get_issue");
         assert_eq!(defs[0].input_schema["properties"]["repo"]["type"], "string");
+    }
+
+    /// A server that advertises `outputSchema` must have it carried through —
+    /// this is the only way a caller can know what fields a tool returns.
+    #[test]
+    fn map_tools_list_carries_the_output_schema() {
+        let result = json!({"tools": [{
+            "name": "create_quote",
+            "description": "",
+            "inputSchema": {"type": "object"},
+            "outputSchema": {"type": "object", "properties": {"annual_premium": {"type": "number"}}}
+        }]});
+        let tools = map_tools_list(&result);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0]
+                .output_schema
+                .as_ref()
+                .and_then(|s| s.pointer("/properties/annual_premium/type")),
+            Some(&json!("number")),
+            "the advertised output schema must survive: {:?}",
+            tools[0].output_schema
+        );
+    }
+
+    /// `outputSchema` is OPTIONAL in the MCP spec, so its absence is normal and
+    /// must stay distinguishable from a server that declared an empty one —
+    /// hence `None`, not `{}`.
+    #[test]
+    fn map_tools_list_leaves_an_absent_output_schema_as_none() {
+        let result = json!({"tools": [{"name": "t", "description": "", "inputSchema": {}}]});
+        let tools = map_tools_list(&result);
+        assert_eq!(tools[0].output_schema, None);
+    }
+
+    /// Reported verbatim rather than normalised: a caller that cares whether
+    /// the schema is well-formed can only say so if it can see what arrived.
+    #[test]
+    fn map_tools_list_passes_a_malformed_output_schema_through() {
+        let result = json!({"tools": [{
+            "name": "t", "description": "", "inputSchema": {}, "outputSchema": "not-an-object"
+        }]});
+        let tools = map_tools_list(&result);
+        assert_eq!(tools[0].output_schema, Some(json!("not-an-object")));
     }
 
     #[test]
