@@ -179,7 +179,19 @@ pub fn map_tools_list(result: &Value) -> Vec<McpToolDef> {
             // reports what the server said, and a caller that cares whether the
             // schema is well-formed can see it and say so. Silently normalising
             // it here would hide a broken server from every caller at once.
-            let output_schema = tool.get("outputSchema").cloned();
+            //
+            // An explicit `"outputSchema": null` is the ONE thing normalised,
+            // because it is not a declaration — it is the absence of one,
+            // spelled out. Several MCP SDKs serialise optional fields as
+            // explicit nulls, and `serde_json`'s `get` distinguishes them from a
+            // missing key: without this filter such a server yields
+            // `Some(Value::Null)`, i.e. "declared a schema", and a consumer that
+            // validates the shape reports "expected a JSON object, got null"
+            // against a perfectly conformant peer.
+            let output_schema = tool
+                .get("outputSchema")
+                .filter(|value| !value.is_null())
+                .cloned();
             Some(McpToolDef {
                 name,
                 description,
@@ -384,6 +396,25 @@ mod tests {
             Some(&json!("number")),
             "the advertised output schema must survive: {:?}",
             tools[0].output_schema
+        );
+    }
+
+    /// A server that spells the absent field as an explicit null has declared
+    /// NOTHING, and must be indistinguishable from one that omitted it.
+    /// `serde_json` does distinguish them, so without a filter this is
+    /// `Some(Value::Null)` — "declared a schema" — and a consumer validating the
+    /// shape reports a malformed schema against a conformant peer.
+    #[test]
+    fn map_tools_list_treats_an_explicit_null_output_schema_as_absent() {
+        let explicit = json!({"tools": [{
+            "name": "t", "description": "", "inputSchema": {}, "outputSchema": null
+        }]});
+        let omitted = json!({"tools": [{"name": "t", "description": "", "inputSchema": {}}]});
+        assert_eq!(map_tools_list(&explicit)[0].output_schema, None);
+        assert_eq!(
+            map_tools_list(&explicit)[0].output_schema,
+            map_tools_list(&omitted)[0].output_schema,
+            "an explicit null and an omitted field must be the same answer"
         );
     }
 
