@@ -115,6 +115,25 @@ pub fn parse_jsonrpc_response(
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpToolDef {
     pub name: String,
+    /// The tool's human-readable display name, when the server offers one.
+    ///
+    /// `name` is an IDENTIFIER — servers routinely emit
+    /// `runner.example.aws_demo_macos_meridian_insurance_commercial_quote` —
+    /// and the MCP spec's own display guidance is to prefer `title` and fall
+    /// back to `name`. Dropping it, as this crate did, left every consumer
+    /// showing the identifier with no way to know a better label existed: a
+    /// Greentic flow author picking a tool saw only 60-character slugs, and no
+    /// change in the designer could have recovered the label, because it never
+    /// crossed this boundary.
+    ///
+    /// `None` means the server offered neither `title` nor the older
+    /// `annotations.title`, which is conformant — both are optional — so a
+    /// consumer must still be able to render `name` alone. It is deliberately
+    /// NOT defaulted to `name`: "the server named this tool" and "we are
+    /// showing the identifier because there was nothing else" are different
+    /// facts, and a consumer that wants to mark the second (a secondary line,
+    /// a dimmer face) cannot if this crate collapses them.
+    pub title: Option<String>,
     pub description: String,
     /// JSON Schema for the tool arguments; `{}` when the server omits it.
     pub input_schema: Value,
@@ -156,7 +175,8 @@ impl ToolOutput {
 }
 
 /// Map a `tools/list` result into tool definitions. Tools without a name are
-/// dropped; a missing `inputSchema` becomes `{}`.
+/// dropped; a missing `inputSchema` becomes `{}`; `title` falls back to
+/// `annotations.title` and then to absent.
 #[must_use]
 pub fn map_tools_list(result: &Value) -> Vec<McpToolDef> {
     let Some(tools) = result.get("tools").and_then(Value::as_array) else {
@@ -166,6 +186,23 @@ pub fn map_tools_list(result: &Value) -> Vec<McpToolDef> {
         .iter()
         .filter_map(|tool| {
             let name = tool.get("name").and_then(Value::as_str)?.to_string();
+            // Spec precedence: `title` first, then the older
+            // `annotations.title`, which is where the field lived before it was
+            // promoted onto the tool itself and is still what older servers
+            // send. An empty string is treated as absent — a server that
+            // serialises `"title": ""` has not supplied a label, and letting it
+            // through would render a blank picker row that no consumer could
+            // tell from a bug in itself.
+            let title = tool
+                .get("title")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    tool.get("annotations")
+                        .and_then(|a| a.get("title"))
+                        .and_then(Value::as_str)
+                })
+                .filter(|t| !t.trim().is_empty())
+                .map(ToString::to_string);
             let description = tool
                 .get("description")
                 .and_then(Value::as_str)
@@ -194,6 +231,7 @@ pub fn map_tools_list(result: &Value) -> Vec<McpToolDef> {
                 .cloned();
             Some(McpToolDef {
                 name,
+                title,
                 description,
                 input_schema,
                 output_schema,
@@ -374,6 +412,74 @@ mod tests {
         assert_eq!(defs.len(), 2);
         assert_eq!(defs[0].name, "get_issue");
         assert_eq!(defs[0].input_schema["properties"]["repo"]["type"], "string");
+    }
+
+    /// The display name a consumer should show. `name` is an identifier, and a
+    /// picker rendering it is showing the operator a slug — so a `title` the
+    /// server did offer must not be dropped at this boundary.
+    #[test]
+    fn map_tools_list_carries_the_tool_title() {
+        let result = json!({"tools": [{
+            "name": "runner.example.aws_demo_macos_meridian_insurance_commercial_quote",
+            "title": "Meridian Commercial Insurance Quote",
+            "description": "", "inputSchema": {}
+        }]});
+        let tools = map_tools_list(&result);
+        assert_eq!(
+            tools[0].title.as_deref(),
+            Some("Meridian Commercial Insurance Quote")
+        );
+    }
+
+    /// `title` was promoted onto the tool itself; before that it lived under
+    /// `annotations`. Servers on the older shape are still out there, and their
+    /// label is just as real — so the fallback is part of the contract, not a
+    /// courtesy.
+    #[test]
+    fn map_tools_list_falls_back_to_the_annotations_title() {
+        let result = json!({"tools": [{
+            "name": "create_quote", "description": "", "inputSchema": {},
+            "annotations": {"title": "Create Quote"}
+        }]});
+        assert_eq!(
+            map_tools_list(&result)[0].title.as_deref(),
+            Some("Create Quote")
+        );
+    }
+
+    /// The newer field wins when a server sends both, so a peer that has
+    /// migrated is not held to whatever it left behind in `annotations`.
+    #[test]
+    fn map_tools_list_prefers_the_tool_title_over_the_annotations_one() {
+        let result = json!({"tools": [{
+            "name": "t", "title": "New", "description": "", "inputSchema": {},
+            "annotations": {"title": "Old"}
+        }]});
+        assert_eq!(map_tools_list(&result)[0].title.as_deref(), Some("New"));
+    }
+
+    /// Both fields are OPTIONAL, so their absence is the common case and must
+    /// stay `None` rather than being defaulted to `name` — a consumer has to be
+    /// able to tell "the server labelled this" from "we are falling back to the
+    /// identifier", which is exactly the distinction it needs to render the two
+    /// differently.
+    #[test]
+    fn map_tools_list_leaves_an_absent_title_as_none() {
+        let result = json!({"tools": [{"name": "t", "description": "", "inputSchema": {}}]});
+        assert_eq!(map_tools_list(&result)[0].title, None);
+    }
+
+    /// An empty or whitespace-only title is not a label. Letting it through
+    /// paints a blank row in a picker, which reads as a bug in the consumer
+    /// rather than as a server that supplied nothing.
+    #[test]
+    fn map_tools_list_treats_a_blank_title_as_absent() {
+        let blank =
+            json!({"tools": [{"name": "t", "title": "   ", "description": "", "inputSchema": {}}]});
+        let empty =
+            json!({"tools": [{"name": "t", "title": "", "description": "", "inputSchema": {}}]});
+        assert_eq!(map_tools_list(&blank)[0].title, None);
+        assert_eq!(map_tools_list(&empty)[0].title, None);
     }
 
     /// A server that advertises `outputSchema` must have it carried through —
