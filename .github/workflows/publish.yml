@@ -1,6 +1,31 @@
 name: Publish
 
+# Publishing used to be `workflow_dispatch` ONLY, which sounds safe and is not:
+# the person who bumps the version is frequently not the person who can click
+# Run workflow (a token without Actions rights gets `422 Actions has been
+# disabled for this user`), so a version bump could sit committed and
+# unpublished with nothing saying so. A downstream repo pinning `=<version>`
+# then waits on a release that never happened.
+#
+# So a version bump on a release lane IS the release trigger. `Cargo.toml` in
+# the paths filter only gets us to the job; the job then verifies the version
+# actually MOVED, because most Cargo.toml edits are dependency changes.
+#
+# Branch scope is the lanes this repo actually releases from — `main` plus the
+# `bump/*` and `release/*` branches (the published 1.3.0-research.0 lives on
+# `bump/1.3.0-research.0`, which is not merged into main). A feature branch that
+# happens to touch the version must never publish, which is why this is not
+# `branches: ['**']`.
+#
+# `workflow_dispatch` stays for a manual re-run.
 on:
+  push:
+    branches:
+      - main
+      - 'bump/**'
+      - 'release/**'
+    paths:
+      - 'Cargo.toml'
   workflow_dispatch:
 
 permissions:
@@ -11,11 +36,58 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need the parent commit to tell a version bump from any other
+          # Cargo.toml edit.
+          fetch-depth: 2
+      - name: Decide whether this is a release
+        id: decide
+        run: |
+          set -euo pipefail
+          ver() { awk -F'"' '/^version = /{print $2; exit}' "$1"; }
+          now="$(ver Cargo.toml)"
+          if [ -z "$now" ]; then
+            echo "::error::could not read the package version from Cargo.toml"
+            exit 1
+          fi
+          before=""
+          if git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+            git show HEAD~1:Cargo.toml > /tmp/prev-cargo.toml 2>/dev/null || true
+            [ -s /tmp/prev-cargo.toml ] && before="$(ver /tmp/prev-cargo.toml)"
+          fi
+          # A dispatch has no "previous" to compare against — treat it as an
+          # explicit request to publish whatever is checked out.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "dispatch: publishing $now on request"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$now" = "$before" ]; then
+            echo "Cargo.toml changed but the version did not ($now) — not a release."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Idempotent: a re-push, a revert-and-reland, or a later edit that
+          # restores an already-released number must be a clean skip, not a
+          # failed job. crates.io would reject the duplicate anyway; failing
+          # here would just train people to ignore a red publish.
+          if curl -sS -H 'User-Agent: greentic-mcp-client-ci' \
+               "https://crates.io/api/v1/crates/greentic-mcp-client/versions" \
+             | grep -q "\"num\":\"$now\""; then
+            echo "$now is already on crates.io — nothing to do."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "version moved ${before:-<none>} -> $now; publishing."
+          echo "publish=true" >> "$GITHUB_OUTPUT"
       # rust-toolchain.toml pins the toolchain, components, and wasm target.
       - uses: Swatinem/rust-cache@v2
+        if: steps.decide.outputs.publish == 'true'
       - name: Verify
+        if: steps.decide.outputs.publish == 'true' 
         run: bash ci/local_check.sh
       - name: Publish to crates.io
+        if: steps.decide.outputs.publish == 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
